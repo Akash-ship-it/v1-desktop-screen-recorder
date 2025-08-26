@@ -20,9 +20,9 @@ import { useApp } from '../contexts/AppContext';
 const SidebarContainer = styled(motion.aside)`
   position: fixed;
   left: 0;
-  top: 0;
+  top: 32px; /* Account for menubar height */
   width: 280px;
-  height: 100vh;
+  height: calc(100vh - 32px); /* Subtract menubar height */
   background: ${props => props.theme.colors.bgSecondary};
   border-right: 1px solid ${props => props.theme.colors.borderPrimary};
   z-index: ${props => props.theme.zIndex.fixed};
@@ -284,7 +284,8 @@ function Sidebar() {
   return (
     <SidebarContainer
       initial={{ x: -280 }}
-      animate={{ x: sidebarOpen ? 0 : -280 }}
+      animate={{ x: 0 }}
+      exit={{ x: -280 }}
       transition={{ duration: 0.3, ease: 'easeInOut' }}
     >
       <SidebarHeader>
@@ -391,6 +392,13 @@ function Sidebar() {
             <QuickOption onClick={() => handleQuickRecord('audio')}>
               <Volume2 size={20} />
               <span>Audio</span>
+            </QuickOption>
+          </QuickOptions>
+          
+          <QuickOptions>
+            <QuickOption onClick={() => actions.openRecordingFolder()}>
+              <Folder size={20} />
+              <span>Open Recordings</span>
             </QuickOption>
           </QuickOptions>
         </RecordingSection>

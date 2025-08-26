@@ -3,6 +3,7 @@ import styled from 'styled-components';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useApp } from './contexts/AppContext';
 import Sidebar from './components/Sidebar';
+import Menubar from './components/Menubar';
 import RecorderView from './views/RecorderView';
 import EditorView from './views/EditorView';
 import LibraryView from './views/LibraryView';
@@ -11,6 +12,9 @@ import ErrorBoundary from './components/ErrorBoundary';
 import ErrorToast from './components/ErrorToast';
 import CountdownOverlay from './components/CountdownOverlay';
 import RecordingIndicator from './components/RecordingIndicator';
+import ErrorDisplay from './components/ErrorDisplay';
+import SuccessMessage from './components/SuccessMessage';
+import RecordingProgress from './components/RecordingProgress';
 
 const AppContainer = styled.div`
   display: flex;
@@ -27,6 +31,7 @@ const MainContent = styled(motion.main)`
   flex-direction: column;
   overflow: hidden;
   position: relative;
+  margin-top: 32px; /* Account for menubar height */
 `;
 
 const ContentArea = styled.div`
@@ -55,6 +60,7 @@ function App() {
     currentView, 
     sidebarOpen, 
     error, 
+    successMessage,
     countdown, 
     isRecording, 
     actions 
@@ -78,7 +84,10 @@ function App() {
   return (
     <ErrorBoundary>
       <AppContainer>
-        <Sidebar />
+        <Menubar />
+        <AnimatePresence>
+          {sidebarOpen && <Sidebar />}
+        </AnimatePresence>
         
         <MainContent
           initial={false}
@@ -86,6 +95,9 @@ function App() {
             marginLeft: sidebarOpen ? '280px' : '0px' 
           }}
           transition={{ duration: 0.3, ease: 'easeInOut' }}
+          style={{
+            position: 'relative'
+          }}
         >
           <ContentArea>
             <AnimatePresence mode="wait">
@@ -112,7 +124,21 @@ function App() {
         {isRecording && (
           <RecordingIndicator />
         )}
+        
+        {/* Recording Progress */}
+        <RecordingProgress />
 
+        {/* Error Display */}
+        <ErrorDisplay />
+        
+        {/* Success Message */}
+        {successMessage && (
+          <SuccessMessage 
+            message={successMessage} 
+            onClose={() => actions.clearSuccessMessage()} 
+          />
+        )}
+        
         {/* Error Toast */}
         {error && (
           <ErrorToast 

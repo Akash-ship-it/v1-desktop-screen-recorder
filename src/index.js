@@ -5,9 +5,6 @@ import App from './App';
 import { GlobalStyles, theme } from './styles/GlobalStyles';
 import { AppProvider } from './contexts/AppContext';
 
-// Initialize Electron IPC
-const { ipcRenderer } = window.require('electron');
-
 // Global error handler
 window.addEventListener('error', (event) => {
   console.error('Global error:', event.error);

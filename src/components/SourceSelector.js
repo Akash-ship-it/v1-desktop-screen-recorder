@@ -181,10 +181,14 @@ function SourceSelector({
   };
 
   const handleRefresh = () => {
-    if (selectedSource === 'screen') {
-      actions.refreshScreens();
-    } else if (selectedSource === 'window') {
-      actions.refreshWindows();
+    try {
+      if (selectedSource === 'screen') {
+        actions.refreshScreens();
+      } else if (selectedSource === 'window') {
+        actions.refreshWindows();
+      }
+    } catch (error) {
+      console.error('Error refreshing sources:', error);
     }
   };
 

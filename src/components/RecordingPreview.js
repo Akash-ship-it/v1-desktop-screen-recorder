@@ -224,6 +224,48 @@ function RecordingPreview() {
     }
   };
 
+  const handleStartRecording = async () => {
+    try {
+      if (isRecording) {
+        const result = await actions.stopRecording();
+        if (result.success) {
+          console.log('Recording stopped successfully:', result.path);
+          // Show success message
+          actions.setError(null);
+        } else {
+          console.error('Failed to stop recording:', result.error);
+          actions.setError(`Failed to stop recording: ${result.error}`);
+        }
+      } else {
+        // Validate recording options
+        const errors = [];
+        if (recordingOptions.frameRate < 1 || recordingOptions.frameRate > 120) {
+          errors.push('Frame rate must be between 1 and 120 FPS');
+        }
+        if (!['720p', '1080p', '1440p', '4K'].includes(recordingOptions.resolution)) {
+          errors.push('Invalid resolution selected');
+        }
+        
+        if (errors.length > 0) {
+          actions.setError(`Validation errors: ${errors.join(', ')}`);
+          return;
+        }
+
+        const result = await actions.startRecording(recordingOptions);
+        if (result.success) {
+          console.log('Recording started successfully');
+          actions.setError(null);
+        } else {
+          console.error('Failed to start recording:', result.error);
+          actions.setError(`Failed to start recording: ${result.error}`);
+        }
+      }
+    } catch (error) {
+      console.error('Recording error:', error);
+      actions.setError(`Recording error: ${error.message}`);
+    }
+  };
+
   const getPreviewContent = () => {
     if (previewImage) {
       return (
@@ -231,12 +273,12 @@ function RecordingPreview() {
           <PreviewImage src={previewImage} alt="Preview" />
           <PreviewOverlay>
             <OverlayButton
-              onClick={() => actions.startRecording()}
+              onClick={handleStartRecording}
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
             >
-              <Play size={18} />
-              Start Recording
+              {isRecording ? <Square size={18} /> : <Play size={18} />}
+              {isRecording ? 'Stop Recording' : 'Start Recording'}
             </OverlayButton>
           </PreviewOverlay>
         </>
@@ -259,6 +301,16 @@ function RecordingPreview() {
             {recordingOptions.source === 'audio' && 'Audio-only recording for podcasts and voice notes'}
           </PreviewDescription>
         </PreviewText>
+        
+        {/* Add recording button for non-image sources */}
+        <OverlayButton
+          onClick={handleStartRecording}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+        >
+          {isRecording ? <Square size={18} /> : <Play size={18} />}
+          {isRecording ? 'Stop Recording' : 'Start Recording'}
+        </OverlayButton>
       </PreviewContent>
     );
   };

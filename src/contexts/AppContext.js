@@ -55,7 +55,9 @@ const initialState = {
     windows: false,
     recording: false
   },
-  error: null
+  error: null,
+  recordingProgress: null,
+  successMessage: null
 };
 
 // Action types
@@ -76,7 +78,10 @@ const ACTIONS = {
   SET_WINDOWS: 'SET_WINDOWS',
   SET_LOADING: 'SET_LOADING',
   SET_ERROR: 'SET_ERROR',
-  CLEAR_ERROR: 'CLEAR_ERROR'
+  CLEAR_ERROR: 'CLEAR_ERROR',
+  SET_RECORDING_PROGRESS: 'SET_RECORDING_PROGRESS',
+  SET_SUCCESS_MESSAGE: 'SET_SUCCESS_MESSAGE',
+  CLEAR_SUCCESS_MESSAGE: 'CLEAR_SUCCESS_MESSAGE'
 };
 
 // Reducer
@@ -133,6 +138,15 @@ function appReducer(state, action) {
     case ACTIONS.CLEAR_ERROR:
       return { ...state, error: null };
     
+    case ACTIONS.SET_RECORDING_PROGRESS:
+      return { ...state, recordingProgress: action.payload };
+    
+    case ACTIONS.SET_SUCCESS_MESSAGE:
+      return { ...state, successMessage: action.payload };
+    
+    case ACTIONS.CLEAR_SUCCESS_MESSAGE:
+      return { ...state, successMessage: null };
+    
     default:
       return state;
   }
@@ -164,6 +178,9 @@ export function AppProvider({ children }) {
     setLoading: (loading) => dispatch({ type: ACTIONS.SET_LOADING, payload: loading }),
     setError: (error) => dispatch({ type: ACTIONS.SET_ERROR, payload: error }),
     clearError: () => dispatch({ type: ACTIONS.CLEAR_ERROR }),
+    setRecordingProgress: (progress) => dispatch({ type: ACTIONS.SET_RECORDING_PROGRESS, payload: progress }),
+    setSuccessMessage: (message) => dispatch({ type: ACTIONS.SET_SUCCESS_MESSAGE, payload: message }),
+    clearSuccessMessage: () => dispatch({ type: ACTIONS.CLEAR_SUCCESS_MESSAGE }),
 
     // Electron-specific actions
     startRecording: async (options = {}) => {
@@ -288,6 +305,94 @@ export function AppProvider({ children }) {
         actions.setError(error.message);
         return null;
       }
+    },
+
+    refreshScreens: async () => {
+      if (!ipcRenderer) {
+        console.log('Electron not available');
+        return [];
+      }
+      
+      try {
+        actions.setLoading({ screens: true });
+        const screens = await ipcRenderer.invoke('get-screens');
+        actions.setScreens(screens);
+        actions.setLoading({ screens: false });
+        return screens;
+      } catch (error) {
+        actions.setLoading({ screens: false });
+        actions.setError(error.message);
+        return [];
+      }
+    },
+
+    refreshWindows: async () => {
+      if (!ipcRenderer) {
+        console.log('Electron not available');
+        return [];
+      }
+      
+      try {
+        actions.setLoading({ windows: true });
+        const windows = await ipcRenderer.invoke('get-windows');
+        actions.setWindows(windows);
+        actions.setLoading({ windows: false });
+        return windows;
+      } catch (error) {
+        actions.setLoading({ windows: false });
+        actions.setError(error.message);
+        return [];
+      }
+    },
+
+    openRecordingFolder: async () => {
+      if (!ipcRenderer) {
+        console.log('Electron not available');
+        return { success: false, error: 'Electron not available' };
+      }
+      
+      try {
+        const result = await ipcRenderer.invoke('open-recording-folder');
+        return result;
+      } catch (error) {
+        actions.setError(error.message);
+        return { success: false, error: error.message };
+      }
+    },
+
+    getRecordingInfo: async (filePath) => {
+      if (!ipcRenderer) {
+        console.log('Electron not available');
+        return { success: false, error: 'Electron not available' };
+      }
+      
+      try {
+        const result = await ipcRenderer.invoke('get-recording-info', filePath);
+        return result;
+      } catch (error) {
+        actions.setError(error.message);
+        return { success: false, error: error.message };
+      }
+    },
+
+    deleteRecording: async (filePath) => {
+      if (!ipcRenderer) {
+        console.log('Electron not available');
+        return { success: false, error: 'Electron not available' };
+      }
+      
+      try {
+        const result = await ipcRenderer.invoke('delete-recording', filePath);
+        if (result.success) {
+          // Remove from recordings list
+          const updatedRecordings = state.recordings.filter(r => r.path !== filePath);
+          actions.setRecordings(updatedRecordings);
+        }
+        return result;
+      } catch (error) {
+        actions.setError(error.message);
+        return { success: false, error: error.message };
+      }
     }
   };
 
@@ -319,12 +424,50 @@ export function AppProvider({ children }) {
       actions.setPausedStatus(!state.isPaused);
     };
 
+    const handleToggleSidebar = () => {
+      actions.toggleSidebar();
+    };
+
+    const handleRecordingProgress = (event, data) => {
+      // Update recording progress
+      actions.setRecordingProgress(data);
+    };
+
+    const handleRecordingError = (event, data) => {
+      actions.setError(`Recording error: ${data.error}`);
+      actions.setRecordingStatus(false);
+    };
+
+    const handleRecordingCompleted = (event, data) => {
+      actions.setRecordingStatus(false);
+      actions.setRecordingPath(data.path);
+      actions.setRecordingDuration(data.duration);
+      
+      // Add to recordings list
+      const newRecording = {
+        id: Date.now().toString(),
+        path: data.path,
+        duration: data.duration,
+        created: new Date().toISOString(),
+        size: 0 // Will be updated when accessed
+      };
+      
+      actions.setRecordings([...state.recordings, newRecording]);
+      
+      // Show success message
+      actions.setSuccessMessage(`Recording completed successfully! Saved to: ${data.path}`);
+    };
+
     // Add event listeners
     ipcRenderer.on('recording-started', handleRecordingStarted);
     ipcRenderer.on('recording-stopped', handleRecordingStopped);
     ipcRenderer.on('recording-timer', handleRecordingTimer);
+    ipcRenderer.on('recording-progress', handleRecordingProgress);
+    ipcRenderer.on('recording-error', handleRecordingError);
+    ipcRenderer.on('recording-completed', handleRecordingCompleted);
     ipcRenderer.on('countdown', handleCountdown);
     ipcRenderer.on('toggle-pause', handleTogglePause);
+    ipcRenderer.on('toggle-sidebar', handleToggleSidebar);
 
     // Cleanup
     return () => {
@@ -333,6 +476,7 @@ export function AppProvider({ children }) {
       ipcRenderer.removeListener('recording-timer', handleRecordingTimer);
       ipcRenderer.removeListener('countdown', handleCountdown);
       ipcRenderer.removeListener('toggle-pause', handleTogglePause);
+      ipcRenderer.removeListener('toggle-sidebar', handleToggleSidebar);
     };
   }, [state.isPaused]);
 
