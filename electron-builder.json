@@ -1,0 +1,88 @@
+{
+  "appId": "com.movami.screenrecorder",
+  "productName": "Movami Screen Recorder",
+  "directories": {
+    "output": "dist",
+    "buildResources": "build"
+  },
+  "files": [
+    "build/**/*",
+    "node_modules/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "node_modules/ffmpeg-static/ffmpeg.exe",
+      "to": "ffmpeg.exe"
+    },
+    {
+      "from": "node_modules/ffmpeg-static/ffmpeg",
+      "to": "ffmpeg"
+    }
+  ],
+  "mac": {
+    "category": "public.app-category.video",
+    "target": [
+      {
+        "target": "dmg",
+        "arch": ["x64", "arm64"]
+      },
+      {
+        "target": "zip",
+        "arch": ["x64", "arm64"]
+      }
+    ],
+    "icon": "build/icon.icns",
+    "darkModeSupport": true,
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.plist"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      },
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "build/icon.ico",
+    "requestedExecutionLevel": "asInvoker"
+  },
+  "linux": {
+    "target": [
+      {
+        "target": "AppImage",
+        "arch": ["x64"]
+      },
+      {
+        "target": "deb",
+        "arch": ["x64"]
+      },
+      {
+        "target": "rpm",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "build/icon.png",
+    "category": "Video"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Movami Screen Recorder"
+  },
+  "publish": {
+    "provider": "github",
+    "owner": "yourusername",
+    "repo": "movami-screen-recorder",
+    "private": false,
+    "releaseType": "release"
+  }
+}
