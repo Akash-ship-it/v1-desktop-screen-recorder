@@ -177,11 +177,8 @@ console.log('✅ Node modules: CHECKED');
 console.log('✅ Main process: CHECKED');
 console.log('✅ React app: CHECKED');
 
-console.log('\n🚀 Application appears to be ready for development!');
-console.log('\nNext steps:');
-console.log('1. Run "npm run dev" to start development mode');
-console.log('2. Run "npm start" to launch the Electron app');
-console.log('3. Check the application window for any runtime errors');
-console.log('4. Test the recording functionality');
-
-console.log('\n📚 For more information, see README.md');
+console.log('\n🧪 Smoke Test Plan (manual/CI hooks):');
+console.log('- Start/Stop Recording: invoke("start-recording"), then invoke("stop-recording") and expect success');
+console.log('- Pause/Resume: invoke("start-recording"), pause, resume, stop, finalize-recording, expect segments merged');
+console.log('- Export: call export-transcode on a small sample and watch export-progress, then cancel-export');
+console.log('\n🚀 Application appears to be ready!');

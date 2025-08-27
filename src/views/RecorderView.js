@@ -227,16 +227,30 @@ function RecorderView() {
     }));
   };
 
-  const handleStartRecording = () => {
-    actions.startRecording();
+  const handleStartRecording = async () => {
+    await actions.startRecording(recordingOptions);
   };
 
-  const handleStopRecording = () => {
-    actions.stopRecording();
+  const handleStopRecording = async () => {
+    const stopRes = await actions.stopRecording();
+    if (stopRes.success) {
+      // finalize segmented recording (will handle single segment too)
+      await actions.finalizeRecording();
+    }
   };
 
-  const handlePauseRecording = () => {
-    actions.updateRecordingOptions({ paused: !isPaused });
+  const handlePauseRecording = async () => {
+    if (!isPaused) {
+      const res = await actions.pauseRecording();
+      if (res.success) {
+        actions.setPausedStatus(true);
+      }
+    } else {
+      const res = await actions.resumeRecording(recordingOptions);
+      if (res.success) {
+        actions.setPausedStatus(false);
+      }
+    }
   };
 
   const updateRecordingOptions = (options) => {
@@ -354,6 +368,8 @@ function RecorderView() {
                 onQualityChange={(quality) => updateRecordingOptions({ quality })}
                 onFrameRateChange={(frameRate) => updateRecordingOptions({ frameRate })}
                 onResolutionChange={(resolution) => updateRecordingOptions({ resolution })}
+                onCodecChange={(preferredCodec) => updateRecordingOptions({ preferredCodec })}
+                onHwAccelToggle={(useHw) => updateRecordingOptions({ professionalCodec: useHw })}
               />
             )}
           </ControlPanel>
@@ -370,7 +386,49 @@ function RecorderView() {
               <AudioSettings
                 audioEnabled={recordingOptions.audio}
                 onAudioToggle={(audio) => updateRecordingOptions({ audio })}
+                onOptionsChange={(opts) => updateRecordingOptions(opts)}
               />
+            )}
+          </ControlPanel>
+
+          {/* Webcam */}
+          <ControlPanel>
+            <PanelHeader>
+              <PanelTitle>Webcam Overlay</PanelTitle>
+              <ToggleButton onClick={() => updateRecordingOptions({ webcamEnabled: !recordingOptions.webcamEnabled })}>
+                {recordingOptions.webcamEnabled ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+              </ToggleButton>
+            </PanelHeader>
+            {recordingOptions.webcamEnabled && (
+              <div style={{ display: 'grid', gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, color: '#b3b3b3', display: 'block', marginBottom: 6 }}>Webcam Device</label>
+                  <select
+                    value={recordingOptions.webcamDevice || ''}
+                    onChange={(e) => updateRecordingOptions({ webcamDevice: e.target.value })}
+                    style={{ padding: 8, background: 'var(--bg-tertiary, #1f1f1f)', color: 'inherit', borderRadius: 8 }}
+                  >
+                    <option value="">Select in Windows Camera privacy settings (uses DirectShow)</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: '#b3b3b3', display: 'block', marginBottom: 6 }}>Size</label>
+                  <input type="range" min={0.1} max={0.5} step={0.05} value={recordingOptions.webcamScale || 0.25} onChange={(e) => updateRecordingOptions({ webcamScale: parseFloat(e.target.value) })} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: '#b3b3b3', display: 'block', marginBottom: 6 }}>Position</label>
+                  <select
+                    value={recordingOptions.webcamPosition}
+                    onChange={(e) => updateRecordingOptions({ webcamPosition: e.target.value })}
+                    style={{ padding: 8, background: 'var(--bg-tertiary, #1f1f1f)', color: 'inherit', borderRadius: 8 }}
+                  >
+                    <option value="top-right">Top Right</option>
+                    <option value="top-left">Top Left</option>
+                    <option value="bottom-right">Bottom Right</option>
+                    <option value="bottom-left">Bottom Left</option>
+                  </select>
+                </div>
+              </div>
             )}
           </ControlPanel>
 

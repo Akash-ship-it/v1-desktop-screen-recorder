@@ -1,7 +1,7 @@
 import React from 'react';
 import styled from 'styled-components';
 import { motion } from 'framer-motion';
-import { Folder, Play, Trash2, Download, Share2, Calendar, Clock, FileVideo } from 'lucide-react';
+import { Folder, Play, Trash2, Download, Share2, Calendar, Clock, FileVideo, Edit3 } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 
 const LibraryContainer = styled.div`
@@ -256,7 +256,8 @@ const formatDate = (dateString) => {
 };
 
 function LibraryView() {
-  const { recordings, actions } = useApp();
+  const { recordings, projects, actions } = useApp();
+  React.useEffect(() => { actions.getProjects(); }, []);
 
   const handlePlayRecording = (recording) => {
     actions.openFile(recording.path);
@@ -330,6 +331,10 @@ function LibraryView() {
                       <Download size={14} />
                       Download
                     </ActionButton>
+                    <ActionButton onClick={() => { actions.setSelectedRecording(recording); actions.setCurrentView('editor'); }}>
+                      <Edit3 size={14} />
+                      Edit
+                    </ActionButton>
                     <ActionButton onClick={() => handleShareRecording(recording)}>
                       <Share2 size={14} />
                       Share
@@ -373,6 +378,29 @@ function LibraryView() {
               <ActionButton>
                 <Download size={14} />
                 Export All
+              </ActionButton>
+            </div>
+          </SidebarSection>
+
+          <SidebarSection>
+            <SectionTitle>Projects</SectionTitle>
+            <div style={{ display: 'grid', gap: '8px' }}>
+              {(projects || []).map((p) => (
+                <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-tertiary, #1f1f1f)', padding: 8, borderRadius: 8 }}>
+                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>{p.name || p.id}</div>
+                  <ActionButton onClick={() => { actions.setSelectedRecording({ path: p.mainFile }); actions.setCurrentView('editor'); }}>
+                    <Edit3 size={14} />
+                    Edit
+                  </ActionButton>
+                </div>
+              ))}
+              <ActionButton onClick={() => {
+                const name = prompt('Project name');
+                const mainFile = prompt('Main media file path');
+                if (name && mainFile) actions.saveProject({ id: Date.now().toString(), name, mainFile, created: new Date().toISOString() });
+              }}>
+                <Edit3 size={14} />
+                New Project
               </ActionButton>
             </div>
           </SidebarSection>

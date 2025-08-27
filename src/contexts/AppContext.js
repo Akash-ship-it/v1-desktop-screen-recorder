@@ -1,16 +1,16 @@
 import React, { createContext, useContext, useReducer, useEffect } from 'react';
 
 // Safely import electron modules only if they exist
-let ipcRenderer = null;
-let electron = null;
+let ipcInvoke = null;
+let ipcOn = null;
 
 try {
-  if (typeof window !== 'undefined' && window.require) {
-    electron = window.require('electron');
-    ipcRenderer = electron.ipcRenderer;
+  if (typeof window !== 'undefined' && window.api) {
+    ipcInvoke = window.api.invoke;
+    ipcOn = window.api.on;
   }
 } catch (error) {
-  console.log('Electron not available in browser environment');
+  console.log('Electron preload bridge not available in browser environment');
 }
 
 // Initial state
@@ -19,6 +19,7 @@ const initialState = {
   isPaused: false,
   recordingDuration: 0,
   recordingPath: null,
+  lastCompletedPath: null,
   countdown: null,
   currentView: 'recorder', // recorder, editor, library, settings
   sidebarOpen: true,
@@ -44,10 +45,22 @@ const initialState = {
     quality: 'high',
     frameRate: 30,
     resolution: '1080p',
-    countdown: 0
+    countdown: 0,
+    // new options
+    preferredCodec: 'auto',
+    professionalCodec: true,
+    systemAudioDevice: undefined,
+    microphoneDevice: undefined,
+    separateAudioTracks: false,
+    webcamEnabled: false,
+    webcamDevice: undefined,
+    webcamScale: 0.25,
+    webcamPosition: 'top-right'
   },
   recordings: [],
   selectedRecording: null,
+  recentRecordings: [],
+  projects: [],
   screens: [],
   windows: [],
   loading: {
@@ -147,6 +160,15 @@ function appReducer(state, action) {
     case ACTIONS.CLEAR_SUCCESS_MESSAGE:
       return { ...state, successMessage: null };
     
+    case 'SET_LAST_COMPLETED_PATH':
+      return { ...state, lastCompletedPath: action.payload };
+    
+    case 'SET_RECENT_RECORDINGS':
+      return { ...state, recentRecordings: action.payload };
+    
+    case 'SET_PROJECTS':
+      return { ...state, projects: action.payload };
+    
     default:
       return state;
   }
@@ -181,17 +203,20 @@ export function AppProvider({ children }) {
     setRecordingProgress: (progress) => dispatch({ type: ACTIONS.SET_RECORDING_PROGRESS, payload: progress }),
     setSuccessMessage: (message) => dispatch({ type: ACTIONS.SET_SUCCESS_MESSAGE, payload: message }),
     clearSuccessMessage: () => dispatch({ type: ACTIONS.CLEAR_SUCCESS_MESSAGE }),
+    setLastCompletedPath: (p) => dispatch({ type: 'SET_LAST_COMPLETED_PATH', payload: p }),
+    setRecentRecordings: (list) => dispatch({ type: 'SET_RECENT_RECORDINGS', payload: list }),
+    setProjects: (list) => dispatch({ type: 'SET_PROJECTS', payload: list }),
 
     // Electron-specific actions
     startRecording: async (options = {}) => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return { success: false, error: 'Electron not available' };
       }
       
       try {
         actions.setLoading({ recording: true });
-        const result = await ipcRenderer.invoke('start-recording', options);
+        const result = await ipcInvoke('start-recording', options);
         actions.setLoading({ recording: false });
         return result;
       } catch (error) {
@@ -202,29 +227,53 @@ export function AppProvider({ children }) {
     },
 
     stopRecording: async () => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return { success: false, error: 'Electron not available' };
       }
       
       try {
-        const result = await ipcRenderer.invoke('stop-recording');
+        const result = await ipcInvoke('stop-recording');
         return result;
       } catch (error) {
         actions.setError(error.message);
         return { success: false, error: error.message };
       }
     },
+    pauseRecording: async () => {
+      if (!ipcInvoke) return { success: false, error: 'Electron not available' };
+      try {
+        return await ipcInvoke('pause-recording');
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    },
+    resumeRecording: async (options = {}) => {
+      if (!ipcInvoke) return { success: false, error: 'Electron not available' };
+      try {
+        return await ipcInvoke('resume-recording', options);
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    },
+    finalizeRecording: async () => {
+      if (!ipcInvoke) return { success: false, error: 'Electron not available' };
+      try {
+        return await ipcInvoke('finalize-recording');
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    },
 
     getScreens: async () => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return [];
       }
       
       try {
         actions.setLoading({ screens: true });
-        const screens = await ipcRenderer.invoke('get-screens');
+        const screens = await ipcInvoke('get-screens');
         actions.setScreens(screens);
         actions.setLoading({ screens: false });
         return screens;
@@ -236,14 +285,14 @@ export function AppProvider({ children }) {
     },
 
     getWindows: async () => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return [];
       }
       
       try {
         actions.setLoading({ windows: true });
-        const windows = await ipcRenderer.invoke('get-windows');
+        const windows = await ipcInvoke('get-windows');
         actions.setWindows(windows);
         actions.setLoading({ windows: false });
         return windows;
@@ -255,13 +304,13 @@ export function AppProvider({ children }) {
     },
 
     getSettings: async () => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return state.settings;
       }
       
       try {
-        const settings = await ipcRenderer.invoke('get-settings');
+        const settings = await ipcInvoke('get-settings');
         actions.updateSettings(settings);
         return settings;
       } catch (error) {
@@ -271,14 +320,14 @@ export function AppProvider({ children }) {
     },
 
     saveSettings: async (settings) => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         actions.updateSettings(settings);
         return { success: true };
       }
       
       try {
-        const result = await ipcRenderer.invoke('save-settings', settings);
+        const result = await ipcInvoke('save-settings', settings);
         if (result.success) {
           actions.updateSettings(settings);
         }
@@ -290,13 +339,13 @@ export function AppProvider({ children }) {
     },
 
     selectOutputPath: async () => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return null;
       }
       
       try {
-        const path = await ipcRenderer.invoke('select-output-path');
+        const path = await ipcInvoke('select-output-path');
         if (path) {
           actions.updateSettings({ outputPath: path });
         }
@@ -308,14 +357,14 @@ export function AppProvider({ children }) {
     },
 
     refreshScreens: async () => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return [];
       }
       
       try {
         actions.setLoading({ screens: true });
-        const screens = await ipcRenderer.invoke('get-screens');
+        const screens = await ipcInvoke('get-screens');
         actions.setScreens(screens);
         actions.setLoading({ screens: false });
         return screens;
@@ -327,14 +376,14 @@ export function AppProvider({ children }) {
     },
 
     refreshWindows: async () => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return [];
       }
       
       try {
         actions.setLoading({ windows: true });
-        const windows = await ipcRenderer.invoke('get-windows');
+        const windows = await ipcInvoke('get-windows');
         actions.setWindows(windows);
         actions.setLoading({ windows: false });
         return windows;
@@ -346,13 +395,13 @@ export function AppProvider({ children }) {
     },
 
     openRecordingFolder: async () => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return { success: false, error: 'Electron not available' };
       }
       
       try {
-        const result = await ipcRenderer.invoke('open-recording-folder');
+        const result = await ipcInvoke('open-recording-folder');
         return result;
       } catch (error) {
         actions.setError(error.message);
@@ -361,13 +410,13 @@ export function AppProvider({ children }) {
     },
 
     getRecordingInfo: async (filePath) => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return { success: false, error: 'Electron not available' };
       }
       
       try {
-        const result = await ipcRenderer.invoke('get-recording-info', filePath);
+        const result = await ipcInvoke('get-recording-info', filePath);
         return result;
       } catch (error) {
         actions.setError(error.message);
@@ -375,14 +424,26 @@ export function AppProvider({ children }) {
       }
     },
 
+    listAudioDevices: async () => {
+      if (!ipcInvoke) {
+        console.log('Electron not available');
+        return { success: false, error: 'Electron not available' };
+      }
+      try {
+        return await ipcInvoke('list-audio-devices');
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    },
+
     deleteRecording: async (filePath) => {
-      if (!ipcRenderer) {
+      if (!ipcInvoke) {
         console.log('Electron not available');
         return { success: false, error: 'Electron not available' };
       }
       
       try {
-        const result = await ipcRenderer.invoke('delete-recording', filePath);
+        const result = await ipcInvoke('delete-recording', filePath);
         if (result.success) {
           // Remove from recordings list
           const updatedRecordings = state.recordings.filter(r => r.path !== filePath);
@@ -393,12 +454,34 @@ export function AppProvider({ children }) {
         actions.setError(error.message);
         return { success: false, error: error.message };
       }
+    },
+
+    openFile: async (filePath) => {
+      if (!ipcInvoke) return { success: false, error: 'Electron not available' };
+      try {
+        return await ipcInvoke('open-file', filePath);
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    }
+    ,
+    getRecentRecordings: async () => {
+      if (!ipcInvoke) return [];
+      try { const list = await ipcInvoke('get-recent-recordings'); actions.setRecentRecordings(list); return list; } catch { return []; }
+    },
+    getProjects: async () => {
+      if (!ipcInvoke) return [];
+      try { const list = await ipcInvoke('get-projects'); actions.setProjects(list); return list; } catch { return []; }
+    },
+    saveProject: async (project) => {
+      if (!ipcInvoke) return { success: false, error: 'Electron not available' };
+      try { return await ipcInvoke('save-project', project); } catch (e) { return { success: false, error: e.message }; }
     }
   };
 
   // Listen for IPC events from main process
   useEffect(() => {
-    if (!ipcRenderer) return;
+    if (!ipcOn) return;
 
     const handleRecordingStarted = (event, data) => {
       actions.setRecordingStatus(true);
@@ -442,6 +525,7 @@ export function AppProvider({ children }) {
       actions.setRecordingStatus(false);
       actions.setRecordingPath(data.path);
       actions.setRecordingDuration(data.duration);
+      actions.setLastCompletedPath(data.path);
       
       // Add to recordings list
       const newRecording = {
@@ -459,24 +543,20 @@ export function AppProvider({ children }) {
     };
 
     // Add event listeners
-    ipcRenderer.on('recording-started', handleRecordingStarted);
-    ipcRenderer.on('recording-stopped', handleRecordingStopped);
-    ipcRenderer.on('recording-timer', handleRecordingTimer);
-    ipcRenderer.on('recording-progress', handleRecordingProgress);
-    ipcRenderer.on('recording-error', handleRecordingError);
-    ipcRenderer.on('recording-completed', handleRecordingCompleted);
-    ipcRenderer.on('countdown', handleCountdown);
-    ipcRenderer.on('toggle-pause', handleTogglePause);
-    ipcRenderer.on('toggle-sidebar', handleToggleSidebar);
+    const offs = [];
+    offs.push(ipcOn('recording-started', handleRecordingStarted));
+    offs.push(ipcOn('recording-stopped', handleRecordingStopped));
+    offs.push(ipcOn('recording-timer', handleRecordingTimer));
+    offs.push(ipcOn('recording-progress', handleRecordingProgress));
+    offs.push(ipcOn('recording-error', handleRecordingError));
+    offs.push(ipcOn('recording-completed', handleRecordingCompleted));
+    offs.push(ipcOn('countdown', handleCountdown));
+    offs.push(ipcOn('toggle-pause', handleTogglePause));
+    offs.push(ipcOn('toggle-sidebar', handleToggleSidebar));
 
     // Cleanup
     return () => {
-      ipcRenderer.removeListener('recording-started', handleRecordingStarted);
-      ipcRenderer.removeListener('recording-stopped', handleRecordingStopped);
-      ipcRenderer.removeListener('recording-timer', handleRecordingTimer);
-      ipcRenderer.removeListener('countdown', handleCountdown);
-      ipcRenderer.removeListener('toggle-pause', handleTogglePause);
-      ipcRenderer.removeListener('toggle-sidebar', handleToggleSidebar);
+      offs.forEach(off => { try { if (typeof off === 'function') off(); } catch {} });
     };
   }, [state.isPaused]);
 

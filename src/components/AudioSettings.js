@@ -214,10 +214,34 @@ const AdvancedButton = styled.button`
   }
 `;
 
-function AudioSettings({ audioEnabled, onAudioToggle }) {
+function AudioSettings({ audioEnabled, onAudioToggle, onOptionsChange }) {
   const [systemAudioLevel, setSystemAudioLevel] = React.useState(0);
   const [microphoneLevel, setMicrophoneLevel] = React.useState(0);
   const [showAdvanced, setShowAdvanced] = React.useState(false);
+  const [devices, setDevices] = React.useState({ system: [], mic: [] });
+  const [selectedSystem, setSelectedSystem] = React.useState('default');
+  const [selectedMic, setSelectedMic] = React.useState('default');
+  const [separateTracks, setSeparateTracks] = React.useState(false);
+
+  React.useEffect(() => {
+    (async () => {
+      if (window.api) {
+        try {
+          const res = await window.api.invoke('list-audio-devices');
+          if (res && res.success) {
+            const list = res.devices || [];
+            setDevices({ system: list, mic: list });
+          }
+        } catch {}
+      }
+    })();
+  }, []);
+
+  React.useEffect(() => {
+    if (typeof onOptionsChange === 'function') {
+      onOptionsChange({ systemAudioDevice: selectedSystem, microphoneDevice: selectedMic, separateAudioTracks: separateTracks });
+    }
+  }, [selectedSystem, selectedMic, separateTracks]);
 
   // Simulate audio level monitoring
   React.useEffect(() => {
@@ -229,18 +253,6 @@ function AudioSettings({ audioEnabled, onAudioToggle }) {
       return () => clearInterval(interval);
     }
   }, [audioEnabled]);
-
-  const audioDevices = [
-    { id: 'default', name: 'Default Audio Device' },
-    { id: 'speakers', name: 'Speakers' },
-    { id: 'headphones', name: 'Headphones' }
-  ];
-
-  const microphoneDevices = [
-    { id: 'default', name: 'Default Microphone' },
-    { id: 'mic1', name: 'Built-in Microphone' },
-    { id: 'mic2', name: 'External Microphone' }
-  ];
 
   return (
     <AudioSettingsContainer>
@@ -312,11 +324,9 @@ function AudioSettings({ audioEnabled, onAudioToggle }) {
                 <label style={{ fontSize: '12px', color: '#b3b3b3', marginBottom: '4px', display: 'block' }}>
                   System Audio Device
                 </label>
-                <AudioDeviceSelect>
-                  {audioDevices.map(device => (
-                    <option key={device.id} value={device.id}>
-                      {device.name}
-                    </option>
+                <AudioDeviceSelect value={selectedSystem} onChange={(e) => setSelectedSystem(e.target.value)}>
+                  {(devices.system.length ? devices.system : [{ id: 'default', name: 'Default' }]).map((name) => (
+                    <option key={name} value={name}>{name}</option>
                   ))}
                 </AudioDeviceSelect>
               </div>
@@ -325,13 +335,16 @@ function AudioSettings({ audioEnabled, onAudioToggle }) {
                 <label style={{ fontSize: '12px', color: '#b3b3b3', marginBottom: '4px', display: 'block' }}>
                   Microphone Device
                 </label>
-                <AudioDeviceSelect>
-                  {microphoneDevices.map(device => (
-                    <option key={device.id} value={device.id}>
-                      {device.name}
-                    </option>
+                <AudioDeviceSelect value={selectedMic} onChange={(e) => setSelectedMic(e.target.value)}>
+                  {(devices.mic.length ? devices.mic : [{ id: 'default', name: 'Default' }]).map((name) => (
+                    <option key={name} value={name}>{name}</option>
                   ))}
                 </AudioDeviceSelect>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '12px', color: '#b3b3b3' }}>Export system and mic as separate tracks</span>
+                <ToggleSwitch as="button" enabled={separateTracks} onClick={() => setSeparateTracks(!separateTracks)} />
               </div>
             </div>
           )}

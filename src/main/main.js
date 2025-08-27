@@ -311,9 +311,23 @@ let recordingProcess = null;
 let recordingStartTime = null;
 let recordingTimer = null;
 let countdownTimer = null;
-let currentRecordingPath = null;
+let currentRecordingPath = null; // Final output path (for single-segment), or target for merged output
+let segmentPaths = []; // For segmented recording
+let segmentCounter = 0;
 let audioStreams = [];
 let videoStreams = [];
+let exportProcess = null;
+// Persisted collections
+function pushRecentRecording(rec) {
+  try {
+    const list = store.get('recentRecordings', []);
+    list.unshift(rec);
+    const limited = list.slice(0, 15);
+    store.set('recentRecordings', limited);
+  } catch (e) {
+    log.warn('Failed to persist recent recording:', e.message);
+  }
+}
 
 // Enable remote module
 enable(require('@electron/remote/main'));
@@ -333,10 +347,11 @@ function createWindow() {
     minWidth: 1200,
     minHeight: 800,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      enableRemoteModule: true,
-      webSecurity: false
+      nodeIntegration: false,
+      contextIsolation: true,
+      enableRemoteModule: false,
+      webSecurity: true,
+      preload: path.join(__dirname, 'preload.js')
     },
     // icon: path.join(__dirname, '../../assets/icon.png'),
     show: false,
@@ -463,6 +478,31 @@ async function getAudioDevices() {
   });
 }
 
+// Helper to get available video devices (Windows dshow)
+async function getVideoDevices() {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') return resolve([]);
+    const { spawn } = require('child_process');
+    const ffmpegProc = spawn(ffmpegStatic, ['-f', 'dshow', '-list_devices', 'true', '-i', 'dummy']);
+    let output = '';
+    ffmpegProc.stderr.on('data', (data) => { output += data.toString(); });
+    ffmpegProc.on('close', () => {
+      const videoDevices = [];
+      const lines = output.split('\n');
+      let inVideo = false;
+      for (const line of lines) {
+        if (line.includes('DirectShow video devices')) { inVideo = true; continue; }
+        if (line.includes('DirectShow audio devices')) { inVideo = false; continue; }
+        if (inVideo && line.includes('"')) {
+          const m = line.match(/"([^"]+)"/);
+          if (m) videoDevices.push(m[1]);
+        }
+      }
+      resolve(videoDevices);
+    });
+  });
+}
+
 // Enhanced professional recording function with Movami-style features
 async function startRecording(options = {}) {
   try {
@@ -473,6 +513,9 @@ async function startRecording(options = {}) {
 
     const {
       source = 'screen',
+      selectedWindow = null,
+      selectedArea = null,
+      selectedScreen = null,
       audio = true,
       video = true,
       quality = 'high',
@@ -490,7 +533,8 @@ async function startRecording(options = {}) {
       recordingBorder = true,
       timestampOverlay = false,
       speakerOverlay = false,
-      cursorHighlight = true
+      cursorHighlight = true,
+      preferredCodec = 'auto' // auto | h264 | hevc | vp9
     } = options;
 
     // Set countdown if specified
@@ -533,12 +577,14 @@ async function startRecording(options = {}) {
     }
 
     currentRecordingPath = path.join(outputDir, filename);
+    segmentPaths = [];
+    segmentCounter = 0;
     log.info('Professional recording will be saved to:', currentRecordingPath);
 
-    // Get display dimensions
-    const primaryDisplay = screen.getPrimaryDisplay();
-    const { width: screenWidth, height: screenHeight } = primaryDisplay.bounds;
-    const scaleFactor = primaryDisplay.scaleFactor || 1;
+    // Get display dimensions (use selectedScreen if provided)
+    const targetDisplay = (selectedScreen != null && screen.getAllDisplays()[selectedScreen]) || screen.getPrimaryDisplay();
+    const { width: screenWidth, height: screenHeight, x: screenX = 0, y: screenY = 0 } = targetDisplay.bounds;
+    const scaleFactor = targetDisplay.scaleFactor || 1;
     const actualWidth = Math.floor(screenWidth * scaleFactor);
     const actualHeight = Math.floor(screenHeight * scaleFactor);
 
@@ -547,48 +593,96 @@ async function startRecording(options = {}) {
     // Configure enhanced ffmpeg command
     const ffmpegCommand = ffmpeg();
     
-    // Enhanced video input configuration for Windows
+    // Enhanced video input configuration per OS honoring source selection
     if (process.platform === 'win32') {
-      ffmpegCommand.input('desktop')
+      const baseOpts = ['-framerate', frameRate.toString(), '-draw_mouse', showCursor ? '1' : '0'];
+      if (source === 'window' && selectedWindow) {
+        // Map selectedWindow id to a name using desktopCapturer
+        const sources = await desktopCapturer.getSources({ types: ['window'] });
+        const match = sources.find(s => s.id === selectedWindow);
+        const windowTitle = match ? match.name : 'Program Manager';
+        ffmpegCommand.input(`title=${windowTitle}`)
         .inputFormat('gdigrab')
-        .inputOptions([
-          '-framerate', frameRate.toString(),
-          '-video_size', `${actualWidth}x${actualHeight}`,
-          '-offset_x', '0',
-          '-offset_y', '0',
-          '-draw_mouse', showCursor ? '1' : '0',
-          // Enhanced cursor options
-          '-show_region', '1'
-        ]);
+          .inputOptions(baseOpts);
     } else {
-      // Enhanced macOS configuration
+        // screen or area
+        const videoSize = selectedArea ? `${selectedArea.width}x${selectedArea.height}` : `${actualWidth}x${actualHeight}`;
+        const offsetX = selectedArea ? Math.max(0, selectedArea.x - screenX) : 0;
+        const offsetY = selectedArea ? Math.max(0, selectedArea.y - screenY) : 0;
+        ffmpegCommand.input('desktop')
+          .inputFormat('gdigrab')
+          .inputOptions([...baseOpts, '-video_size', videoSize, '-offset_x', String(offsetX), '-offset_y', String(offsetY)]);
+      }
+    } else if (process.platform === 'darwin') {
+      // macOS (window capture unsupported via avfoundation; fallback to screen/area)
+      const videoSize = selectedArea ? `${selectedArea.width}x${selectedArea.height}` : `${screenWidth}x${screenHeight}`;
       ffmpegCommand.input('0:')
         .inputFormat('avfoundation')
         .inputOptions([
           '-framerate', frameRate.toString(),
-          '-video_size', `${screenWidth}x${screenHeight}`,
+          '-video_size', videoSize,
           '-capture_cursor', showCursor ? 'true' : 'false',
           '-capture_mouse_clicks', cursorHighlight ? 'true' : 'false'
         ]);
+      // Note: cropping to area would require an additional scale/crop filter; omitted for stability
+    } else if (process.platform === 'linux') {
+      // Linux X11 default :0.0
+      const displayEnv = process.env.DISPLAY || ':0.0';
+      const offset = selectedArea ? `${Math.max(0, selectedArea.x - screenX)},${Math.max(0, selectedArea.y - screenY)}` : '0,0';
+      const videoSize = selectedArea ? `${selectedArea.width}x${selectedArea.height}` : `${screenWidth}x${screenHeight}`;
+      ffmpegCommand.input(`${displayEnv}+${offset}`)
+        .inputFormat('x11grab')
+        .inputOptions(['-framerate', frameRate.toString(), '-video_size', videoSize]);
     }
 
-    // Enhanced audio configuration
+    // Optional webcam PiP (Windows)
+    let webcamAdded = false;
+    const webcamEnabled = options.webcamEnabled === true;
+    const webcamDevice = options.webcamDevice;
+    if (webcamEnabled && process.platform === 'win32' && webcamDevice) {
+      try {
+        const vids = await getVideoDevices();
+        if (vids.includes(webcamDevice)) {
+          ffmpegCommand.input(`video=${webcamDevice}`).inputFormat('dshow');
+          webcamAdded = true;
+        }
+      } catch (e) {
+        log.warn('Webcam not available:', e.message);
+      }
+    }
+
+    // Enhanced audio configuration (device selection + potential dual inputs)
+    let didAddSys = false;
+    let didAddMic = false;
+    const sysDev = options.systemAudioDevice;
+    const micDev = options.microphoneDevice;
+    const separateTracks = options.separateAudioTracks === true;
+
     if (audio && process.platform === 'win32') {
       try {
         const audioDevices = await getAudioDevices();
-        if (audioDevices.length > 0) {
-          const audioDevice = audioDevices[0];
-          log.info('Using enhanced audio device:', audioDevice);
-          
-          ffmpegCommand.input(`audio=${audioDevice}`)
-            .inputFormat('dshow')
-            .audioCodec('aac')
-            .audioChannels(2)
-            .audioFrequency(48000)
-            .audioBitrate(audioEnhancement ? '256k' : '128k');
+        const pick = (name) => (name && audioDevices.includes(name)) ? name : (audioDevices[0] || null);
+        const sys = pick(sysDev);
+        const mic = pick(micDev);
+        if (sys) {
+          ffmpegCommand.input(`audio=${sys}`).inputFormat('dshow');
+          didAddSys = true;
+        }
+        if (mic && (!sys || mic !== sys)) {
+          ffmpegCommand.input(`audio=${mic}`).inputFormat('dshow');
+          didAddMic = true;
         }
       } catch (error) {
         log.warn('Enhanced audio not available:', error.message);
+      }
+    }
+    if (audio && process.platform === 'linux') {
+      const sys = sysDev || 'default';
+      ffmpegCommand.input(sys).inputFormat('pulse');
+      didAddSys = true;
+      if (micDev && micDev !== sys) {
+        ffmpegCommand.input(micDev).inputFormat('pulse');
+        didAddMic = true;
       }
     }
     
@@ -617,8 +711,8 @@ async function startRecording(options = {}) {
     
     // Add cursor highlighting effect
     if (cursorHighlight && showCursor) {
-      // This would need custom cursor overlay - simplified version
-      videoFilters.push('eq=brightness=0.05:saturation=1.1');
+      // Simplified enhancement only; heavy cursor effects removed for stability
+      videoFilters.push('eq=brightness=0.03:saturation=1.06');
     }
     
     // Add professional border/frame
@@ -630,14 +724,13 @@ async function startRecording(options = {}) {
     
     // Add watermark/branding overlay
     if (addWatermark || brandingOverlay) {
-      // Create watermark text overlay
+      // Create watermark text overlay using a safe generic font reference
       const watermarkText = 'MOVAMI';
-      const fontsize = Math.floor(actualHeight * 0.025); // 2.5% of screen height
+      const fontsize = Math.floor(actualHeight * 0.025);
       const fontcolor = 'white@0.7';
       const x = actualWidth - 150;
       const y = 30;
-      
-      videoFilters.push(`drawtext=text='${watermarkText}':fontsize=${fontsize}:fontcolor=${fontcolor}:x=${x}:y=${y}:fontfile='arial.ttf'`);
+      videoFilters.push(`drawtext=text='${watermarkText}':fontsize=${fontsize}:fontcolor=${fontcolor}:x=${x}:y=${y}`);
     }
     
     // Add timestamp overlay if requested
@@ -661,25 +754,100 @@ async function startRecording(options = {}) {
       }
     }
     
-    // Apply video filters if any
-    if (videoFilters.length > 0) {
+    // Apply video filters if any (when not using PiP overlay)
+    if (videoFilters.length > 0 && !webcamAdded) {
       baseOutputOptions.push('-vf', videoFilters.join(','));
     }
     
-    // Enhanced audio processing
-    if (audio && audioEnhancement) {
-      baseOutputOptions.push(
-        // Audio enhancement filters
-        '-af', 'highpass=f=100,lowpass=f=8000,volume=1.2,dynaudnorm=f=75:g=25'
-      );
+    // Enhanced audio processing (single-track mode only; for separate tracks we avoid a global -af)
+    const outputAudioOptions = [];
+    if (audio && audioEnhancement && !(didAddSys && didAddMic && separateTracks)) {
+      baseOutputOptions.push('-af', 'highpass=f=100,lowpass=f=8000,volume=1.2,dynaudnorm=f=75:g=25');
     }
 
+    // Hardware encoder auto-detect (basic)
+    const pickNvenc = () => {
+      try {
+        const { spawnSync } = require('child_process');
+        const res = spawnSync(ffmpegStatic, ['-hide_banner', '-h', 'encoder=h264_nvenc']);
+        return res.status === 0;
+      } catch (_) { return false; }
+    };
+    const useNvenc = process.platform === 'win32' && pickNvenc() && professionalCodec && (preferredCodec === 'auto' || preferredCodec === 'h264');
+
+    if (useNvenc) {
+      ffmpegCommand
+        .videoCodec('h264_nvenc')
+        .outputOptions([
+          ...baseOutputOptions,
+          '-rc', 'vbr',
+          '-cq', quality === 'ultra' ? '17' : quality === 'high' ? '19' : quality === 'medium' ? '23' : '28',
+          '-b:v', quality === 'ultra' ? '18000k' : quality === 'high' ? '12000k' : '8000k',
+          '-maxrate', quality === 'ultra' ? '28000k' : quality === 'high' ? '18000k' : '12000k',
+          '-bufsize', quality === 'ultra' ? '36000k' : quality === 'high' ? '24000k' : '16000k',
+          '-preset', 'p5'
+        ]);
+    } else {
     ffmpegCommand
       .videoCodec('libx264')
       .outputOptions(baseOutputOptions);
+    }
 
-    // Set output
-    ffmpegCommand.output(currentRecordingPath);
+    // Build audio mapping/mixing
+    if (audio) {
+      if (didAddSys && didAddMic) {
+        if (separateTracks) {
+          // Map video (0:v), system (1:a), mic (2:a)
+          ffmpegCommand.outputOptions(['-map', '0:v']);
+          ffmpegCommand.outputOptions(['-map', '1:a']);
+          ffmpegCommand.outputOptions(['-map', '2:a']);
+          ffmpegCommand.outputOptions(['-c:a', 'aac']);
+        } else {
+          // Mix two audio inputs into one track
+          ffmpegCommand.outputOptions([
+            '-filter_complex', '[1:a]volume=1.0[a0];[2:a]volume=1.0[a1];[a0][a1]amix=inputs=2:normalize=1[aout]',
+            '-map', '0:v',
+            '-map', '[aout]',
+            '-c:a', 'aac'
+          ]);
+        }
+      } else if (didAddSys || didAddMic) {
+        // Single audio input
+        ffmpegCommand.outputOptions(['-map', '0:v']);
+        ffmpegCommand.outputOptions(['-map', didAddSys ? '1:a' : '1:a']);
+        ffmpegCommand.outputOptions(['-c:a', 'aac']);
+      }
+    }
+
+    // Webcam PiP overlay via complex filter
+    if (webcamAdded) {
+      const camScale = Math.max(0.1, Math.min(0.5, Number(options.webcamScale || 0.25)));
+      const pos = options.webcamPosition || 'top-right';
+      const pad = 20;
+      let overlayXY = `main_w-w-${pad}:${pad}`; // top-right default
+      if (pos === 'top-left') overlayXY = `${pad}:${pad}`;
+      if (pos === 'bottom-right') overlayXY = `main_w-w-${pad}:main_h-h-${pad}`;
+      if (pos === 'bottom-left') overlayXY = `${pad}:main_h-h-${pad}`;
+
+      // Build minimal complex filter; append EQ/denoise after overlay if present
+      const filters = [];
+      filters.push({ filter: 'scale2ref', options: `w=iw:h=ih`, inputs: '0:v', outputs: ['base','ref'] });
+      filters.push({ filter: 'scale', options: `iw*${camScale}:-1`, inputs: '1:v', outputs: 'cam' });
+      filters.push({ filter: 'overlay', options: overlayXY, inputs: ['base','cam'], outputs: 'v0' });
+      if (videoFilters.length > 0) {
+        // Apply combined filters as a single comma-joined chain on v0
+        filters.push({ filter: videoFilters.join(','), inputs: 'v0', outputs: 'vout' });
+      } else {
+        filters.push({ filter: 'null', inputs: 'v0', outputs: 'vout' });
+      }
+      ffmpegCommand.complexFilter(filters, 'vout');
+      ffmpegCommand.outputOptions(['-map', '[vout]']);
+    }
+
+    // Output to a segment file (segmented recording enables pause/resume)
+    const segmentFile = path.join(outputDir, `segment-${timestamp}-${segmentCounter}.mp4`);
+    segmentPaths.push(segmentFile);
+    ffmpegCommand.output(segmentFile);
     
     // Enhanced error handling
     ffmpegCommand.on('error', (err) => {
@@ -714,6 +882,17 @@ async function startRecording(options = {}) {
             type: 'professional'
           });
         }
+
+        // Persist to recent list
+        try {
+          const rec = {
+            id: Date.now().toString(),
+            path: currentRecordingPath,
+            duration: Date.now() - recordingStartTime,
+            created: new Date().toISOString()
+          };
+          pushRecentRecording(rec);
+        } catch {}
       }
     });
     
@@ -938,54 +1117,16 @@ function stopRecording() {
     // Check if file was created and has content
     setTimeout(() => {
       try {
-        if (fs.existsSync(finalPath)) {
-          const stats = fs.statSync(finalPath);
-          if (stats.size > 0) {
-            log.info('Recording file created successfully:', finalPath, 'Size:', stats.size, 'bytes');
-            
-            // Notify renderer of successful completion
+        // For segmented recording, do not finalize here. Final concat occurs on "finalize-recording".
             if (mainWindow) {
               mainWindow.webContents.send('recording-stopped', {
-                path: finalPath,
+            path: segmentPaths[segmentPaths.length - 1] || finalPath,
                 duration: recordingDuration,
-                size: stats.size,
                 success: true
               });
-            }
-          } else {
-            log.warn('Recording file is empty:', finalPath);
-            // Try to delete empty file
-            fs.unlinkSync(finalPath);
-            if (mainWindow) {
-              mainWindow.webContents.send('recording-stopped', {
-                path: finalPath,
-                duration: recordingDuration,
-                success: false,
-                error: 'Recording file is empty'
-              });
-            }
-          }
-        } else {
-          log.error('Recording file was not created:', finalPath);
-          if (mainWindow) {
-            mainWindow.webContents.send('recording-stopped', {
-              path: finalPath,
-              duration: recordingDuration,
-              success: false,
-              error: 'Recording file was not created'
-            });
-          }
         }
       } catch (error) {
-        log.error('Error checking recording file:', error);
-        if (mainWindow) {
-          mainWindow.webContents.send('recording-stopped', {
-            path: finalPath,
-            duration: recordingDuration,
-            success: false,
-            error: error.message
-          });
-        }
+        log.error('Error after stop:', error);
       }
       
       // Reset the manual stop flag
@@ -1001,6 +1142,70 @@ function stopRecording() {
     return { success: false, error: error.message };
   }
 }
+
+// Pause by stopping current segment without merging
+ipcMain.handle('pause-recording', async () => {
+  try {
+    if (!isRecording || !recordingProcess) {
+      return { success: false, error: 'No active recording' };
+    }
+    stopRecording();
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Resume by starting a new segment with last used options (basic: reuse defaults)
+ipcMain.handle('resume-recording', async (event, options = {}) => {
+  try {
+    if (isRecording) {
+      return { success: false, error: 'Already recording' };
+    }
+    // Increment segment counter for unique name
+    segmentCounter += 1;
+    await startRecording(options);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Finalize: if multiple segments exist, concat into final output
+ipcMain.handle('finalize-recording', async () => {
+  try {
+    if (segmentPaths.length === 0) {
+      return { success: false, error: 'No segments to finalize' };
+    }
+    if (segmentPaths.length === 1) {
+      // Single segment: rename to final output if needed
+      const onlySeg = segmentPaths[0];
+      if (onlySeg !== currentRecordingPath) {
+        fs.copyFileSync(onlySeg, currentRecordingPath);
+      }
+      return { success: true, path: currentRecordingPath };
+    }
+    // Build concat list file
+    const concatListPath = path.join(path.dirname(currentRecordingPath), `concat-${Date.now()}.txt`);
+    const listContent = segmentPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+    fs.writeFileSync(concatListPath, listContent, 'utf8');
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(concatListPath)
+        .inputOptions(['-f', 'concat', '-safe', '0'])
+        .outputOptions(['-c', 'copy'])
+        .on('end', resolve)
+        .on('error', reject)
+        .save(currentRecordingPath);
+    });
+    // Cleanup concat list (keep segments for now or delete them if desired)
+    try { fs.unlinkSync(concatListPath); } catch {}
+    return { success: true, path: currentRecordingPath };
+  } catch (e) {
+    log.error('Finalize error:', e);
+    return { success: false, error: e.message };
+  }
+});
 
 function startCountdown(seconds) { 
   return new Promise((resolve) => {
@@ -1133,6 +1338,27 @@ ipcMain.handle('get-windows', async () => {
   }));
 });
 
+// List audio devices (basic)
+ipcMain.handle('list-audio-devices', async () => {
+  try {
+    if (process.platform === 'win32') {
+      const devices = await getAudioDevices();
+      return { success: true, devices };
+    }
+    if (process.platform === 'linux') {
+      // Minimal support: rely on PulseAudio default
+      return { success: true, devices: ['default'] };
+    }
+    if (process.platform === 'darwin') {
+      // avfoundation device listing would require separate probing; return default
+      return { success: true, devices: ['default'] };
+    }
+    return { success: true, devices: ['default'] };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 ipcMain.handle('start-recording', async (event, options) => {
   try {
     await startRecording(options);
@@ -1195,6 +1421,23 @@ ipcMain.handle('open-file', async (event, filePath) => {
   return { success: false, error: 'File not found' };
 });
 
+ipcMain.handle('pick-video-file', async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [
+        { name: 'Media', extensions: ['mp4','mkv','mov','avi','webm','mp3','wav','aac'] }
+      ]
+    });
+    if (!result.canceled && result.filePaths.length > 0) {
+      return { success: true, path: result.filePaths[0] };
+    }
+    return { success: false, error: 'Canceled' };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 // Enhanced IPC handlers
 ipcMain.handle('open-recording-folder', async () => {
   try {
@@ -1236,6 +1479,35 @@ ipcMain.handle('get-recording-info', async (event, filePath) => {
   }
 });
 
+// Projects persistence API
+ipcMain.handle('get-projects', async () => {
+  try {
+    return store.get('projects', []);
+  } catch (e) {
+    return [];
+  }
+});
+
+ipcMain.handle('save-project', async (event, project) => {
+  try {
+    const list = store.get('projects', []);
+    const existingIndex = list.findIndex(p => p.id === project.id);
+    if (existingIndex >= 0) list[existingIndex] = project; else list.unshift(project);
+    store.set('projects', list);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('get-recent-recordings', async () => {
+  try {
+    return store.get('recentRecordings', []);
+  } catch (e) {
+    return [];
+  }
+});
+
 ipcMain.handle('delete-recording', async (event, filePath) => {
   try {
     if (!fs.existsSync(filePath)) {
@@ -1248,6 +1520,107 @@ ipcMain.handle('delete-recording', async (event, filePath) => {
   } catch (error) {
     log.error('Error deleting recording:', error);
     return { success: false, error: error.message };
+  }
+});
+
+// Editing: Trim a clip (input -> output) by start and end (seconds)
+ipcMain.handle('edit-trim', async (event, { input, output, startSec, endSec }) => {
+  try {
+    if (!fs.existsSync(input)) return { success: false, error: 'Input not found' };
+    await new Promise((resolve, reject) => {
+      ffmpeg(input)
+        .setStartTime(startSec || 0)
+        .setDuration(Math.max(0, (endSec || 0) - (startSec || 0)))
+        .outputOptions(['-c', 'copy'])
+        .on('end', resolve)
+        .on('error', reject)
+        .save(output);
+    });
+    return { success: true, output };
+  } catch (e) {
+    log.error('edit-trim error:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+// Editing: Merge multiple clips using concat demuxer
+ipcMain.handle('edit-merge', async (event, { inputs, output }) => {
+  try {
+    if (!Array.isArray(inputs) || inputs.length === 0) return { success: false, error: 'No inputs' };
+    const listPath = path.join(path.dirname(output), `merge-${Date.now()}.txt`);
+    fs.writeFileSync(listPath, inputs.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'));
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(listPath)
+        .inputOptions(['-f', 'concat', '-safe', '0'])
+        .outputOptions(['-c', 'copy'])
+        .on('end', resolve)
+        .on('error', reject)
+        .save(output);
+    });
+    try { fs.unlinkSync(listPath); } catch {}
+    return { success: true, output };
+  } catch (e) {
+    log.error('edit-merge error:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+// Export presets: transcode with selected format/bitrate/container
+ipcMain.handle('export-transcode', async (event, { input, output, preset }) => {
+  try {
+    if (!fs.existsSync(input)) return { success: false, error: 'Input not found' };
+    const p = preset || { container: 'mp4', vcodec: 'libx264', acodec: 'aac', videoBitrate: '6000k', audioBitrate: '192k', fps: null, scale: null };
+    await new Promise((resolve, reject) => {
+      let cmd = ffmpeg(input);
+      if (p.scale) cmd = cmd.videoFilters(`scale=${p.scale}`);
+      if (p.fps) cmd = cmd.outputOptions(['-r', String(p.fps)]);
+      if (p.vcodec) cmd = cmd.videoCodec(p.vcodec);
+      if (p.acodec) cmd = cmd.audioCodec(p.acodec);
+      const outOpts = [];
+      if (p.videoBitrate) outOpts.push('-b:v', p.videoBitrate);
+      if (p.audioBitrate) outOpts.push('-b:a', p.audioBitrate);
+      if (p.container === 'gif') {
+        // High quality GIF: palettegen + paletteuse (simplified one-pass here for speed)
+        cmd = cmd.outputOptions(['-filter_complex', 'fps=12,scale=640:-1:flags=lanczos']);
+      }
+      // Image sequence export
+      let savePath = output;
+      if (p.container === 'pngseq' || p.container === 'jpgseq') {
+        const ext = p.container === 'pngseq' ? 'png' : 'jpg';
+        const dir = path.dirname(output);
+        const base = path.basename(output, path.extname(output));
+        savePath = path.join(dir, `${base}_%05d.${ext}`);
+        cmd = cmd.outputOptions(['-vsync', '0']);
+        // mute audio for image sequence
+        cmd = cmd.noAudio();
+      }
+      exportProcess = cmd
+        .outputOptions([...outOpts, '-movflags', '+faststart'])
+        .on('progress', (prog) => {
+          try { if (mainWindow) mainWindow.webContents.send('export-progress', { timemark: prog.timemark, percent: prog.percent || 0 }); } catch {}
+        })
+        .on('end', () => { exportProcess = null; resolve(); })
+        .on('error', (err) => { exportProcess = null; reject(err); })
+        .save(savePath);
+    });
+    return { success: true, output };
+  } catch (e) {
+    log.error('export-transcode error:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('cancel-export', async () => {
+  try {
+    if (exportProcess && exportProcess.ffmpegProc) {
+      try { exportProcess.ffmpegProc.kill('SIGTERM'); } catch {}
+      exportProcess = null;
+      return { success: true };
+    }
+    return { success: false, error: 'No export in progress' };
+  } catch (e) {
+    return { success: false, error: e.message };
   }
 });
 

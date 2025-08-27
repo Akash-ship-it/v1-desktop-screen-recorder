@@ -191,7 +191,9 @@ function QualitySettings({
   resolution,
   onQualityChange,
   onFrameRateChange,
-  onResolutionChange
+  onResolutionChange,
+  onCodecChange,
+  onHwAccelToggle
 }) {
   const handlePresetChange = (preset) => {
     onQualityChange(preset.quality);
@@ -298,6 +300,30 @@ function QualitySettings({
             <span>Larger</span>
           </div>
         </SliderContainer>
+      </SettingGroup>
+
+      <SettingGroup>
+        <SettingLabel>Codec</SettingLabel>
+        <SettingDescription>
+          Choose video codec. Hardware acceleration available on supported GPUs
+        </SettingDescription>
+        <Select onChange={(e) => onCodecChange && onCodecChange(e.target.value)}>
+          <option value="auto">Auto (Best)</option>
+          <option value="h264">H.264</option>
+          <option value="hevc">H.265/HEVC</option>
+          <option value="vp9">VP9 (Web)</option>
+        </Select>
+      </SettingGroup>
+
+      <SettingGroup>
+        <SettingLabel>Hardware Acceleration</SettingLabel>
+        <SettingDescription>
+          Use GPU encoding when available for lower CPU usage
+        </SettingDescription>
+        <div>
+          <input id="hwaccel" type="checkbox" onChange={(e) => onHwAccelToggle && onHwAccelToggle(e.target.checked)} />
+          <label htmlFor="hwaccel" style={{ marginLeft: 8, fontSize: '12px' }}>Enable GPU when available</label>
+        </div>
       </SettingGroup>
     </QualitySettingsContainer>
   );

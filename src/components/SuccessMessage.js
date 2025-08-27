@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CheckCircle, X } from 'lucide-react';
+import { useApp } from '../contexts/AppContext';
 
 const SuccessContainer = styled(motion.div)`
   position: fixed;
@@ -69,6 +70,7 @@ const CloseButton = styled.button`
 `;
 
 function SuccessMessage({ message, duration = 5000, onClose }) {
+  const { lastCompletedPath, actions } = useApp();
   const [isVisible, setIsVisible] = useState(true);
 
   useEffect(() => {
@@ -107,6 +109,12 @@ function SuccessMessage({ message, duration = 5000, onClose }) {
           <SuccessContent>
             <SuccessTitle>Success</SuccessTitle>
             <SuccessMessageText>{message}</SuccessMessageText>
+            {lastCompletedPath && (
+              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                <button onClick={() => actions.setCurrentView('editor')} style={{ padding: '6px 10px', borderRadius: 6 }}>Open in Editor</button>
+                <button onClick={() => window.api.invoke('open-file', lastCompletedPath)} style={{ padding: '6px 10px', borderRadius: 6 }}>Open File</button>
+              </div>
+            )}
           </SuccessContent>
           
           <CloseButton onClick={handleClose} title="Close">
