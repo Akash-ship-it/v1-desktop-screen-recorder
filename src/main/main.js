@@ -7,6 +7,8 @@ const ffmpegStatic = require('ffmpeg-static');
 const Store = require('electron-store');
 const log = require('electron-log');
 const { autoUpdater } = require('electron-updater');
+const TEST_MODE = process.env.TEST_MODE === '1';
+let testServer = null;
 
 // Advanced video processing utilities for professional recording
 class ProfessionalVideoProcessor {
@@ -365,7 +367,11 @@ function createWindow() {
 
   // Load the app
   const startUrl = process.env.ELECTRON_START_URL || 'http://localhost:3000';
-  mainWindow.loadURL(startUrl);
+  if (TEST_MODE) {
+    mainWindow.loadURL('about:blank');
+  } else {
+    mainWindow.loadURL(startUrl);
+  }
 
   // Show window when ready
   mainWindow.once('ready-to-show', () => {
@@ -508,6 +514,23 @@ async function startRecording(options = {}) {
   try {
     if (isRecording) {
       log.info('Recording already in progress');
+      return;
+    }
+
+    if (TEST_MODE) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const outputDir = options.outputPath || path.join(app.getPath('videos'), 'Movami Recordings');
+      if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+      currentRecordingPath = path.join(outputDir, `test-${timestamp}.mp4`);
+      try { fs.writeFileSync(currentRecordingPath, Buffer.from('TEST_RECORDING')); } catch {}
+      recordingStartTime = Date.now();
+      isRecording = true;
+      if (mainWindow) {
+        mainWindow.webContents.send('recording-started', { path: currentRecordingPath, startTime: recordingStartTime, type: 'test' });
+        setTimeout(() => {
+          if (mainWindow) mainWindow.webContents.send('recording-progress', { percent: 50, timemark: '00:00:01', fps: 30, type: 'test' });
+        }, 200);
+      }
       return;
     }
 
@@ -1059,8 +1082,10 @@ let isManualStop = false;
 function stopRecording() {
   try {
     if (!isRecording || !recordingProcess) {
-      log.info('No recording in progress to stop');
-      return { success: false, error: 'No recording in progress' };
+      if (!(TEST_MODE && isRecording)) {
+        log.info('No recording in progress to stop');
+        return { success: false, error: 'No recording in progress' };
+      }
     }
 
     log.info('Stopping recording...');
@@ -1083,7 +1108,7 @@ function stopRecording() {
     const finalPath = currentRecordingPath;
 
     // Stop the recording process gracefully
-    if (recordingProcess && recordingProcess.ffmpegProc) {
+    if (!TEST_MODE && recordingProcess && recordingProcess.ffmpegProc) {
       try {
         // Send 'q' command to FFmpeg for graceful shutdown
         recordingProcess.ffmpegProc.stdin.write('q');
@@ -1118,12 +1143,19 @@ function stopRecording() {
     setTimeout(() => {
       try {
         // For segmented recording, do not finalize here. Final concat occurs on "finalize-recording".
-            if (mainWindow) {
-              mainWindow.webContents.send('recording-stopped', {
+        if (mainWindow) {
+          mainWindow.webContents.send('recording-stopped', {
             path: segmentPaths[segmentPaths.length - 1] || finalPath,
-                duration: recordingDuration,
-                success: true
-              });
+            duration: recordingDuration,
+            success: true
+          });
+        }
+        if (TEST_MODE && mainWindow) {
+          mainWindow.webContents.send('recording-completed', {
+            path: finalPath,
+            duration: recordingDuration,
+            type: 'test'
+          });
         }
       } catch (error) {
         log.error('Error after stop:', error);
@@ -1659,6 +1691,39 @@ app.whenReady().then(() => {
   
   // Check for updates
   autoUpdater.checkForUpdatesAndNotify();
+
+  if (TEST_MODE) {
+    // Minimal HTTP harness to drive flows in CI
+    const http = require('http');
+    testServer = http.createServer(async (req, res) => {
+      try {
+        if (req.url?.startsWith('/start')) {
+          await startRecording({});
+          res.writeHead(200); res.end('started'); return;
+        }
+        if (req.url?.startsWith('/pause')) {
+          stopRecording();
+          res.writeHead(200); res.end('paused'); return;
+        }
+        if (req.url?.startsWith('/resume')) {
+          await startRecording({});
+          res.writeHead(200); res.end('resumed'); return;
+        }
+        if (req.url?.startsWith('/stop')) {
+          stopRecording();
+          res.writeHead(200); res.end('stopped'); return;
+        }
+        if (req.url?.startsWith('/finalize')) {
+          // In TEST_MODE, treat as success with current path
+          const r = { success: true, path: currentRecordingPath };
+          res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(r)); return;
+        }
+        res.writeHead(404); res.end('not found');
+      } catch (e) {
+        res.writeHead(500); res.end(e.message);
+      }
+    }).listen(3123);
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -1676,6 +1741,9 @@ app.on('activate', () => {
 app.on('before-quit', () => {
   if (isRecording) {
     stopRecording();
+  }
+  if (testServer) {
+    try { testServer.close(); } catch {}
   }
 });
 

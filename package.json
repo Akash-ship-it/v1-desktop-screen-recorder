@@ -13,7 +13,9 @@
     "eject": "react-scripts eject",
     "electron-pack": "electron-builder",
     "dist": "npm run build && electron-builder",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "test:playwright": "cross-env TEST_MODE=1 npx playwright test",
+    "test:playwright:install": "npx playwright install"
   },
   "build": {
     "appId": "com.movami.screenrecorder",
@@ -66,7 +68,8 @@
     "@types/react-dom": "^18.2.7",
     "process": "^0.11.10",
     "react-app-rewired": "^2.2.1",
-    "typescript": "^4.9.5"
+    "typescript": "^4.9.5",
+    "@playwright/test": "^1.45.0"
   },
   "browserslist": {
     "production": [
